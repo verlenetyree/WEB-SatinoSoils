@@ -1,0 +1,451 @@
+---
+title: "Полиномиальные преобразование координат Сатинского полигона"
+author: "Солдаткина Маргарита"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+<b>Цель работы:</b> посредством полиномиальных преобразований осущетствить переход от локальных координат МГУ, некогда используемых в УНБ Сатино, к широко используемым системам координат, таких как СК Калуга-40, WGS-84 и UTM 37 зона. 
+
+В качестве опорных точек были использованы координаты точек геодезической сети Сатино. 
+
+Подключение библиотек.
+
+
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(matlib)
+library(ggplot2)
+library(sf)
+library(gstat)
+library(stars)
+library(ggrepel)
+```
+
+### Подготовка данных
+
+Импорт данных с координатами точек опорной сети в координах локальной сети МГУ, WGS-84 и СК Калуга-40.
+
+```{r message=FALSE, warning=FALSE}
+coord = read_excel("catalog3.xls", sheet = 2, skip = 1, col_types = c('text', rep('numeric', 2), rep('text', 2), rep('numeric', 2)))
+
+colnames(coord) = c("Name", "MSU_X", "MSU_Y", "WGS_B", "WGS_L", "KALUGA_X", "KALUGA_Y")
+```
+
+Удаление всех строк, где есть пустые значениями.
+
+```{r}
+coord = drop_na(coord)
+
+```
+
+
+Преобразованиe координат WGS-84 к десятичному виду.
+
+```{r}
+WGS_B = sapply(coord$WGS_B, function(X){
+  x = as.numeric(unlist(strsplit(X, ' ')))
+  X = x[1] + x[2]/60 + x[3]/3600
+})
+
+WGS_L = sapply(coord$WGS_L, function(X){
+  x = as.numeric(unlist(strsplit(X, ' ')))
+  X = x[1] + x[2]/60 + x[3]/3600
+})
+
+```
+
+Сборка фрейма данных с обновлёнными значениями координат WGS-84.
+
+```{r}
+
+coord = data.frame(coord[, seq(1, 3)], WGS_B, WGS_L, coord[, c(6, 7)])
+row.names(coord) = seq(1, nrow(coord))  
+
+coord
+
+```
+
+Создание датафрейма с координатами точек опорной сети в локальных координатаx МГУ и координатах UTM 37N. 
+
+Данный фрейм данных создаётся отдельно, так как количество пунктов опорной сети с взаимоустановленными координатами отличается.
+
+```{r message=FALSE, warning=FALSE}
+
+coord_UTM = read_excel("catalog3.xls", sheet = 3, skip = 1, col_types = c('text', rep('numeric', 4)))
+colnames(coord_UTM) = c("Name", "MSU_X", "MSU_Y", "UTM_X", "UTM_Y")
+
+coord_UTM = drop_na(coord_UTM)
+
+coord_UTM
+```
+
+### Вычисление параметров полиномиального преобразования 
+
+Напишем функцию для вычисления коэффициентов трансформации первой, второй и третьей степени:
+
+```{r}
+
+# controlPoints = df[xSource, ySource, xTarget, yTarget]
+
+polynomParams = function(controlPoints, power){
+  #Определяем количество коэффициентов
+  len = length(controlPoints[,1])
+  x = controlPoints[,1]
+  y = controlPoints[,2]
+  x2 = controlPoints[,3]
+  y2 = controlPoints[,4]
+  #Строим матрицу
+  
+  if (power == 1) {
+    mtx = matrix(c(rep(1, len), x, y), nrow = len, ncol = 3)
+  }
+  else if (power == 2) {
+    mtx = matrix(c(rep(1, len), x, y, x^2, x*y, y^2), nrow = len, ncol = 6)
+  }
+  else if (power == 3) {
+    mtx = matrix(c(rep(1, len), x, y, x^2, x*y, y^2, x^3, y*x^2, (y^2)*x, x^3), nrow = len, ncol = 10)
+  }
+  else {
+    message("Error: Wrong power argument")
+    return () 
+  }
+ 
+  # print(mtx)
+  # print(t(mtx) %*% mtx)
+  # print(det(t(mtx) %*% mtx))
+
+  #Решаем прямую задачу (x,y -> x2,y2) для нахождения коэффициентов a и b:
+  an = solve(t(mtx) %*% mtx, tol = -1e-9) %*% t(mtx) %*% x2
+  bn = solve(t(mtx) %*% mtx, tol = -1e-9) %*% t(mtx) %*% y2
+  
+  params = data.frame(an, bn)
+}
+
+power = 2
+
+```
+
+Применим полученную функцию.
+
+```{r}
+
+cP_Kaluga = data.frame(coord[2], coord[3], coord[6], coord[7])
+colnames(cP_Kaluga) = c("X source", "Y source", "X target", "Y target")
+
+params_Kaluga = polynomParams(cP_Kaluga, power)
+
+params_Kaluga
+```
+
+Аналогичные вычисления параметров полиномиального преобразования для трансформации в UTM 37N.
+
+```{r}
+cP_UTM37 = data.frame(coord_UTM[, seq(2,5)])
+colnames(cP_UTM37) = c("X source", "Y source", "X target", "Y target")
+
+params_UTM37 = polynomParams(cP_UTM37, power)
+
+params_UTM37
+
+```
+
+И вычисление параметров для трансформации в WGS-84.
+
+```{r}
+cP_WGS = data.frame(coord[2], coord[3], coord[4], coord[5])
+colnames(cP_WGS) = c("X source", "Y source", "X target", "Y target")
+
+params_WGS = polynomParams(cP_WGS, power)
+
+params_WGS
+
+```
+
+### Применение параметров полиномиального преобразование
+
+
+Напишем функцию для решения систем уравнений полиномиального преобразования первой и второй степеней:
+
+```{r}
+
+polynomApply = function(data, params, power){
+
+  x = data[,1]
+  y = data[,2]
+  an = params[,1]
+  bn = params[,2]
+
+  if (power == 1){
+    xApply = apply(data, 1, function(X){
+      an[1] + an[2] * X[1] + an[3] * X[2]}) 
+    yApply = apply(data, 1, function(X){
+      bn[1] + bn[2] * X[1] + bn[3] * X[2]})
+    return(data.frame(xApply, yApply))
+  }
+  else if (power == 2){
+    xApply = apply(data, 1, function(X){
+      an[1] + an[2] * X[1] + an[3] * X[2] + an[4] * X[1]^2 + an[5] * X[1] * X[2] + an[6] * X[2]^2})
+    yApply =  apply(data, 1, function(X){
+      bn[1] + bn[2] * X[1] + bn[3] * X[2] + bn[4] * X[1]^2 + bn[5]* X[1] * X[2] + bn[6] * X[2]^2})
+    return(data.frame(xApply, yApply))
+  }
+  else {
+    message("Error: Wrong power argument")
+    return()
+  }
+}
+
+```
+
+
+А теперь используем вычисленные параметры полиномиального преобразования на точках почвенных разрезов.
+
+Импорт данных с координатами точек почвенных разрезов:
+
+```{r}
+profiles = read.csv("dat_Profiles.csv", sep = ";")
+profiles = drop_na(profiles)
+
+coords_profiles = data.frame(profiles$ProfileY, profiles$ProfileX)
+colnames(coords_profiles) = c("ProfileX", "ProfileY")
+
+```
+
+Применение параметров полиномиального преобразования
+
+```{r}
+
+#примение трансформации
+profile_Kaluga = polynomApply(coords_profiles, params_Kaluga, power)
+profile_UTM37 = polynomApply(coords_profiles, params_UTM37, power)
+profile_WGS = polynomApply(coords_profiles, params_WGS, power)
+
+```
+
+<i>Экспорт в *.csv, чтобы покрутить в QGIS</i>
+ 
+```{r}
+write_csv(profile_WGS, "POLYNOM_WGS.csv")
+write_csv(profile_UTM37, "POLYNOM_UTM37_new.csv")
+
+```
+
+<img src="screenshot2.jpg">
+
+<i>Выглядит уже намного лучше!</i>
+
+<img src="screenshot3.jpg">
+
+
+### Составление карты погрешностей трансформации
+
+Создание нового датафрейма c разницей между преобразованными исходными
+координатами и целевыми координатами контрольных точек:
+
+```{r}
+
+#Residuals are the difference between transformed source coordinates and target coordinates of control points.
+
+getPolynomResiduals = function(controlPoints, params, power){
+  applyTransform = polynomApply(controlPoints[,1:2], params, power)
+  
+  resX = applyTransform[,1] - controlPoints[,3]
+  resY = applyTransform[,2] - controlPoints[,4]
+  residuals = data.frame(resX, resY)
+}
+
+resKaluga = getPolynomResiduals(cP_Kaluga, params_Kaluga, power)
+resUTM37 = getPolynomResiduals(cP_UTM37, params_UTM37, power)
+resWGS = getPolynomResiduals(cP_WGS, params_WGS, power)
+
+#Переход от градусов к секундам для WGS-84
+WGS_X = sapply(resWGS$resX, function(X){X = X * 3600})
+WGS_Y = sapply(resWGS$resY, function(X){X = X * 3600})
+
+#Запись значений погрешности в отдельный датафрейм
+residuals = data.frame(coord[,seq(1, 3)], resKaluga, resUTM37, WGS_X, WGS_Y)
+colnames(residuals) = c("Name", "MSU_X", "MSU_Y", "Kaluga_X", "Kaluga_Y", "UTM_X", "UTM_Y", "WGS_X", "WGS_Y")
+
+```
+
+значения RMSE(Среднеквадратичная ошибка)
+
+```{r}
+
+getRMSE = function(residuals){
+  len = length(residuals[,1])
+  RMSE = sqrt(sum(residuals[,1]^2, residuals[,2]^2)/len)
+}
+
+#значения RMSE(Среднеквадратичная ошибка) записываются в отдельные переменные 
+RMSE_Kaluga = getRMSE(resKaluga)
+RMSE_UTM = getRMSE(resUTM37)
+RMSE_WGS = getRMSE(resWGS) * 3600
+```
+
+
+Вычисление расстояния между целевыми координатами контрольных точек и координатами преобразованных точек.
+
+```{r}
+#функция для вычисления расстояния между точками
+distance = function(x1, x2, y1, y2) {
+   sqrt((x1 - x2) ^ 2 + (y1 - y2) ^ 2)
+}
+
+dKaluga = mapply(function(x1, x2, y1, y2) { distance(x1, x2, y1, y2) }, 
+                 residuals$MSU_X, residuals$MSU_X + residuals$Kaluga_X, residuals$MSU_Y, residuals$MSU_Y + residuals$Kaluga_Y)
+dUTM = mapply(function(x1, x2, y1, y2) { distance(x1, x2, y1, y2) }, 
+                 residuals$MSU_X, residuals$MSU_X + residuals$UTM_X, residuals$MSU_Y, residuals$MSU_Y + residuals$UTM_Y)
+dWGS = mapply(function(x1, x2, y1, y2) { distance(x1, x2, y1, y2) }, 
+                 residuals$MSU_X, residuals$MSU_X + residuals$WGS_X, residuals$MSU_Y, residuals$MSU_Y + residuals$WGS_Y)
+
+#обновлениt ahtqvf данных
+residuals = mutate(residuals, dKaluga, dUTM, dWGS)
+
+residuals
+
+```
+Построение сетки для интерполяции
+
+```{r}
+sf_residuals = st_as_sf(residuals, coords = c("MSU_X", "MSU_Y"), crs = 32637)
+
+box = st_bbox(sf_residuals)
+
+px_grid = st_as_stars(box, dx = 10, dy = 10)
+
+# ggplot() + 
+#   geom_sf(data = sf_residuals, color = 'red') +
+#   geom_sf(data = st_as_sf(px_grid), size = 0.5, fill = NA)
+
+```
+
+Интерполяция значений погрешности методом обратно взвешенных расстояний (IDW)
+
+```{r message=FALSE, warning=FALSE}
+
+#Калуга-40
+px_grid = px_grid |> 
+   mutate(Kaluga_idw = idw(dKaluga ~ 1, locations = sf_residuals, newdata = px_grid, idp = 2.0) |> pull(var1.pred) |> as('vector'))
+
+#UTM-37
+px_grid = px_grid |> 
+   mutate(UTM_idw = idw(dUTM ~ 1, locations = sf_residuals, newdata = px_grid, idp = 2.0) |> pull(var1.pred) |> as('vector'))
+
+#WGS-84
+px_grid = px_grid |> 
+   mutate(WGS_idw = idw(dWGS ~ 1, locations = sf_residuals, newdata = px_grid, idp = 2.0) |> pull(var1.pred) |> as('vector'))
+```
+
+Основные параметры визуализации
+
+```{r}
+levels = c(0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.5, 2)
+
+levelsWGS = seq(0, 0.1, 0.01)
+
+colors = colorRampPalette(c("darkseagreen1", "tan1", "sienna1", "orangered4"))
+ncolors = length(levels)-1
+ncolorsWGS = length(levelsWGS)-1
+
+legend = scale_fill_manual(name = 'м',
+                          values = colors(ncolors),
+                          guide = guide_legend(label.vjust = -0.3, reverse = TRUE, title.position = "top"),
+                          labels = levels,
+                          na.value = 'white',
+                          drop = FALSE)
+
+legendWGS = scale_fill_manual(name = 's',
+                          values = colors(ncolorsWGS),
+                          guide = guide_legend(label.vjust = -0.3, reverse = TRUE, title.position = "top"),
+                          labels = levelsWGS,
+                          na.value = 'white',
+                          drop = FALSE)
+```
+
+Настройка параметров визуализации изолиний
+
+```{r}
+#изолинии
+cont_Kaluga = st_contour(px_grid['Kaluga_idw'], 
+                       breaks = levels, 
+                       contour_lines = TRUE)
+
+cont_UTM = st_contour(px_grid['UTM_idw'], 
+                       breaks = levels, 
+                       contour_lines = TRUE)
+
+cont_WGS = st_contour(px_grid['WGS_idw'], 
+                       breaks = levelsWGS, 
+                       contour_lines = TRUE)
+```
+
+Визуализация
+
+```{r}
+#Калуга-40
+ggplot() + 
+  geom_stars(data = cut(px_grid['Kaluga_idw'], breaks = levels)) +
+  geom_sf(data = sf_residuals, color = 'red', size = 1) +
+  geom_sf(data = cont_Kaluga, color = 'burlywood4', size = 0.1) +
+  geom_sf_text(data = sf_residuals,
+               size = 1.5, check_overlap = TRUE, nudge_y = 75,
+               aes(label = Name, geometry = geometry)) +
+  legend +
+  ggtitle("Калуга-40",
+          subtitle = paste('RMSE =', round(RMSE_Kaluga, 4))) +
+  theme_void()
+
+#UTM-37
+ggplot() + 
+  geom_stars(data = cut(px_grid['UTM_idw'], breaks = levels)) +
+  geom_sf(data = sf_residuals, color = 'red', size = 1) +
+  geom_sf(data = cont_UTM, color = 'burlywood4', size = 0.1) +
+  geom_sf_text(data = sf_residuals,
+               size = 1.5, check_overlap = TRUE, nudge_y = 75,
+               aes(label = Name, geometry = geometry)) +
+  legend +
+  ggtitle("UTM 37N",
+          subtitle = paste('RMSE =', round(RMSE_UTM, 4))) +
+  theme_void()
+
+#WGS-84
+ggplot() + 
+  geom_stars(data = cut(px_grid['WGS_idw'], breaks = levelsWGS)) +
+  geom_sf(data = sf_residuals, color = 'red', size = 1) +
+  geom_sf(data = cont_WGS, color = 'burlywood4', size = 0.1) +
+  geom_sf_text(data = sf_residuals,
+               size = 1.5, check_overlap = TRUE, nudge_y = 75,
+               aes(label = Name, geometry = geometry)) +
+  legendWGS +
+  ggtitle("WGS-84", 
+          subtitle = paste('RMSE =', format(round(RMSE_WGS, 4), scientific = FALSE))) +
+  theme_void()
+
+```
+
+### THIN PLANE SPLINE
+
+Библиотека для трансформации тонкостенным сплайном
+
+```{r}
+library(shapes)
+
+```
+
+Попробуем на координатак Калуга-40
+
+```{r}
+source = matrix(c(cP_Kaluga[,1],cP_Kaluga[,2]), nrow = length(cP_Kaluga[,1]), ncol = 2)
+target = matrix(c(cP_Kaluga[,3],cP_Kaluga[,4]), nrow = length(cP_Kaluga[,3]), ncol = 2)
+
+splineKaluga = tpsgrid(source, target)
+
+splineKaluga
+```
+
