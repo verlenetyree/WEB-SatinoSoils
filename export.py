@@ -1,15 +1,21 @@
 import pyodbc
+import os
+import sys
 import win32com.client
 import logging
 from pathlib import Path
 import numpy as np
 import pandas as pd
+# from string import Template
+# import sqlalchemy
 from pyproj import Proj
-
+# from pyproj import _datadir, datadir
 from datetime import datetime
 import time
 
 from progress.bar import ChargingBar
+
+from config import PG_UID, PG_PWD
 
 start_time = datetime.now()
 
@@ -17,7 +23,13 @@ start_time = datetime.now()
 #    format='%(levelname)s: %(message)s',
 #    level=logging.INFO)
 
+
+print("Python version: " + sys.version.replace("\n", ""))
+print(os.path.dirname(sys.executable))
+
 myDataSources = pyodbc.dataSources()
+
+print(myDataSources)
 
 conn_str = (r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=C:\Users\grita\Documents\important\MSU\SOIL_SATINO\soil_database.mdb;')
 filepath = r'C:\Users\grita\Documents\important\MSU\SOIL_SATINO\soil_database.mdb'
@@ -39,7 +51,20 @@ except:
 
 conn.commit()
 
-df = pd.read_sql('select ProfileY, ProfileX from dat_Profiles', conn)
+#---------
+#sql = "select ProfileId, ProfileY, ProfileX from dat_Profiles where (ProfileId < 343) and (ProfileId > 343)"
+#cursor.execute(sql)
+#data = cursor.fetchall()
+#print(data)
+#df = pd.DataFrame(data)
+#print(df)
+#---------
+
+#df = pd.read_sql('dat_Profiles', conn)
+df1 = pd.read_sql('select ProfileId, ProfileY, ProfileX from dat_Profiles where ProfileId < 343', conn)
+df2 = pd.read_sql('select ProfileId, ProfileY, ProfileX from dat_Profiles', conn)
+df = pd.concat([df1, df2])
+print(df.head(20))
 
 # affine parametrs
 an = [6.067276e+06, 9.996311e-01, 6.214654e-04]
@@ -54,6 +79,8 @@ lon, lat = ReProj(y.values, x.values, inverse=True)
 dfWGS = pd.DataFrame(np.c_[lon, lat], columns=["Lon", "Lat"])
 dfWGS.replace(np.inf, np.NaN, inplace=True)
 
+print(dfWGS.head(20))
+
 # Update columns values
 for index, row in dfWGS.iterrows():
 	with conn.cursor() as crsr:
@@ -67,7 +94,8 @@ conn.commit()
 # EXPORT ALL TABLES TO POSTGRESQL
 # # # # # #
 
-postgres_conn_str = ("DRIVER={PostgreSQL Unicode};""DATABASE=soil_database;""UID=postgres;""PWD=Magrit;""SERVER=localhost;""PORT=5432;")
+
+postgres_conn_str = ("DRIVER={PostgreSQL Unicode};""DATABASE=soil_database;"f"UID={PG_UID};"f"PWD={PG_PWD};""SERVER=localhost;""PORT=5432;")
 postgres_conn = pyodbc.connect(postgres_conn_str)
 postgres_cursor = postgres_conn.cursor()
 
@@ -85,8 +113,9 @@ for table in table_list:
 	logging.info(f"Exporting: {table}")
 	postgres_cursor.execute(f'DROP TABLE IF EXISTS public."{table}"')
 	postgres_conn.commit()
-	a.DoCmd.TransferDatabase(acExport, "ODBC Database", "ODBC;DRIVER={PostgreSQL Unicode};"f"DATABASE=soil_database;"f"UID=%database_name%;"f"PWD=%database_pwd%;""SERVER=localhost;"f"PORT=5432;", acTable, f"{table}", f"{table}")
+	a.DoCmd.TransferDatabase(acExport, "ODBC Database", "ODBC;DRIVER={PostgreSQL Unicode};"f"DATABASE=soil_database;"f"UID=postgres;"f"PWD=Magrit;""SERVER=localhost;"f"PORT=5432;", acTable, f"{table}", f"{table}")
 	logging.info(f"Finished Export of Table: {table}")
 	bar.next()
 bar.finish()
 print(datetime.now() - start_time)
+
